@@ -1,11 +1,6 @@
 # Snake (Win32 software renderer)
 
-A Snake game written in plain C for Windows. There is no game engine and no GPU API: everything is drawn into a 32-bit pixel buffer on the CPU and blitted to the window with GDI. The long-term goal is to let a reinforcement-learning agent play it.
-
-## Status
-
-- Playable by keyboard.
-- The RL agent (ONNX Runtime + DQN) is **not part of the current build**. It is being reworked after the game logic was cleaned up. See [Roadmap](#roadmap).
+A new Snake game written in plain C for Windows. There is no game engine and no GPU API: everything is drawn into a 32-bit pixel buffer on the CPU and copied to the window with GDI.
 
 ## Controls
 
@@ -46,11 +41,7 @@ code/
   platform_common.c     Input / Button types
   utils.c               typedefs (u32, f32, v2 ...) and macros
   build.bat             MSVC build script
-rl/                     earlier RL experiment (discrete-action copy of the sim, built as a DLL for training)
-test_onnx.c             standalone ONNX Runtime load test
 ```
-
-`rl/`, `test_onnx.c` and `code/agent.c` (if you still have it) are not compiled into the game and are out of date relative to `code/`.
 
 ## How it works
 
@@ -78,7 +69,6 @@ test_onnx.c             standalone ONNX Runtime load test
 
 ## Roadmap
 
-- [ ] Reintroduce the RL agent: one shared simulation core for the game and training, a single observation function, discrete actions
 - [ ] Save the high score to a file
 - [ ] Background music
 - [ ] Particle effects on collisions
