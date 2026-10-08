@@ -1,1 +1,4 @@
 *.pdb
+.vs/
+build/.vs/
+build/vc140.pdb build/win32_platform.pdb

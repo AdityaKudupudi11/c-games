@@ -1,5 +1,5 @@
 /*
-TODO (from your original list):
+TODO :
 -file saving system (high score)
 -basic background music
 -later try for new levels
@@ -7,121 +7,30 @@ TODO (from your original list):
 -add few powerups
 */
 
-#define MAX_TAIL          1024
-#define MAX_HISTORY       4096
-#define MAX_COLORS        2
-
-#define REGION_ROWS       10
-#define REGION_COLS       20
-#define REGION_COUNT      (REGION_ROWS * REGION_COLS)
-
-#define SEGMENT_DIST      1.5f     // distance along the path between tail segments
-#define HISTORY_PREFILL   40       // path points laid out behind the head at spawn
-#define START_TAIL        7
-#define START_LIVES       3
-#define SAFE_TAIL_SEGMENTS 5       // the first N segments can never hit the head
-#define BASE_SPEED        30.f
-#define MAX_SPEED         90.f     // keeps per-tick movement smaller than the head
-#define FOOD_PULSE_SPEED  6.f      // world units / second
-#define GAME_OVER_TIME    1.5f     // seconds the "GAME OVER" banner stays up
-#define DIR_QUEUE_MAX     3
-
-// 0 = leaving the arena wraps to the opposite side (what the old comment said)
-// 1 = touching a wall ends the round (what the old code actually did)
-#ifndef WALLS_KILL
-#define WALLS_KILL 0
-#endif
-
-typedef struct {
-    v2 min;
-    v2 max;
-    b32 occupied;
-} Region;
-
-typedef struct {
-    v2 p;
-    v2 dir;        // unit axis vector; velocity is ALWAYS dir * speed
-    v2 last_rec;   // last point written into path_history
-    v2 half_size;
-    u32 color;
-    f32 speed;
-} Snake_head;
-
-typedef struct {
-    v2 p;
-} Body;
-
-typedef struct {
-    v2 p;
-    v2 half_size;
-    v2 half_size_range;   // x = min, y = max
-    f32 pulse_dir;        // +1 growing, -1 shrinking
-    u32 color;
-} Food;
-
-// Flat snapshot for the agent (kept for later, not used by the game itself).
-typedef struct {
-    f32 head_x, head_y;
-    f32 dir_x, dir_y;
-    f32 food_x, food_y;
-    int tail_count;
-    float tail_positions[MAX_TAIL * 2];
-    int lives;
-    f32 speed;
-    int food_eaten;
-    int score;
-} GameState;
-
-global u32 colors[MAX_COLORS] = {0x45FFB7, 0xD445FF};
-global int color_idx = 0;
-
-global v2 arena_half_size;
-global Region regions[REGION_COUNT];
-global f32 region_w, region_h;
-
-global Body tail[MAX_TAIL];
-global Food food;
-global Snake_head head;
-
-global v2 path_history[MAX_HISTORY];
-global int history_count = 0;
-
-global int tail_count = START_TAIL;
-global int lives = START_LIVES;
-global int score = 0;
-global int high_score = 0;
-global int food_eaten = 0;
-
-global f32 game_over_timer = 0.f;
-global v2 dir_queue[DIR_QUEUE_MAX];
-global int dir_queue_count = 0;
 global b32 game_initialized = false;
-
-
-// ------------------------------------------------------------ helpers
+global sim game_state ;
 
 internal void
-push_history(v2 p) {
-    path_history[history_count % MAX_HISTORY] = p;
-    history_count++;
+push_history(sim*s,v2 p) {
+    s->path_history[s->history_count % MAX_HISTORY] = p;
+    s->history_count++;
 }
 
-// Tail segment i sits on the i-th most recent path point.
 internal void
-update_tail(void) {
-    for (int i = 0; i < tail_count; i++) {
-        int idx = history_count - (i + 1);
-        if (idx >= 0) tail[i].p = path_history[idx % MAX_HISTORY];
+update_tail(sim* s) {
+    for (int i = 0; i < s->tail_count; i++) {
+        int idx = s->history_count - (i + 1);
+        if (idx >= 0) s->tail[i] = s->path_history[idx % MAX_HISTORY];
     }
 }
 
 internal int
-get_region_index(v2 p) {
-    f32 margin_x = arena_half_size.x - food.half_size_range.y;
-    f32 margin_y = arena_half_size.y - food.half_size_range.y;
+get_region_index(sim* s, v2 p) {
+    f32 margin_x = s->arena_half_size.x - s->food_half_size_range.y;
+    f32 margin_y = s->arena_half_size.y - s->food_half_size_range.y;
 
-    int col = (int)floorf((p.x + margin_x) / region_w);
-    int row = (int)floorf((p.y + margin_y) / region_h);
+    int col = (int)floorf((p.x + margin_x) / s->region_w);
+    int row = (int)floorf((p.y + margin_y) / s->region_h);
 
     col = clamp_int(0, col, REGION_COLS - 1);
     row = clamp_int(0, row, REGION_ROWS - 1);
@@ -129,99 +38,94 @@ get_region_index(v2 p) {
 }
 
 internal void
-update_regions(void) {
-    for (int i = 0; i < REGION_COUNT; i++) regions[i].occupied = false;
+update_regions(sim* s) {
+    for (int i = 0; i < REGION_COUNT; i++) s->regions[i].occupied = false;
 
-    for (int i = 0; i < tail_count; i++) {
-        regions[get_region_index(tail[i].p)].occupied = true;
+    for (int i = 0; i < s->tail_count; i++) {
+        s->regions[get_region_index(s, s->tail[i])].occupied = true;
     }
-    regions[get_region_index(head.p)].occupied = true;
+    s->regions[get_region_index(s, s->Snake_head_p)].occupied = true;
 }
 
 internal void
-food_spawn(void) {
-    update_regions();
+food_spawn(sim* s) {
+    update_regions(s);
 
     // Choose uniformly among FREE regions. The old do/while could never pick
     // region 199 and looped forever once every region was occupied.
     int free_ids[REGION_COUNT];
     int free_count = 0;
     for (int i = 0; i < REGION_COUNT; i++) {
-        if (!regions[i].occupied) free_ids[free_count++] = i;
+        if (!s->regions[i].occupied) free_ids[free_count++] = i;
     }
     int id = free_count ? free_ids[random_int(free_count)] : random_int(REGION_COUNT);
 
-    food.p.x = random_num_generator_in_range(regions[id].min.x, regions[id].max.x);
-    food.p.y = random_num_generator_in_range(regions[id].min.y, regions[id].max.y);
+    s->food_p.x = random_num_generator_in_range(s->regions[id].min.x, s->regions[id].max.x);
+    s->food_p.y = random_num_generator_in_range(s->regions[id].min.y, s->regions[id].max.y);
 }
 
 
-// ------------------------------------------------------------ state setup
 
 // Starts a fresh round. high_score is intentionally NOT touched.
 internal void
-reset_round(void) {
-    head.p = (v2){-20.f, 0.f};
-    head.dir = (v2){1.f, 0.f};
-    head.last_rec = head.p;
-    head.speed = BASE_SPEED;
-    head.color = 0x50E66A;
+reset_round(sim* s) {
+    s->Snake_head_p = (v2){-20.f, 0.f};
+    s->Snake_head_dir = (v2){1.f, 0.f};
+    s->Snake_head_last_rec = s->Snake_head_p;
+    s->Snake_head_speed = BASE_SPEED;
+    s->Snake_head_color = 0x50E66A;
 
-    tail_count = START_TAIL;
-    lives = START_LIVES;
-    score = 0;
-    food_eaten = 0;
-    game_over_timer = 0.f;
-    dir_queue_count = 0;
+    s->tail_count = START_TAIL;
+    s->lives = START_LIVES;
+    s->score = 0;
+    s->food_eaten = 0;
+    s->game_over_timer = 0.f;
+    s->dir_queue_count = 0;
 
     // Lay a straight trail behind the head so the whole tail exists (and is
     // visible, and counts for food placement) from the very first frame.
-    history_count = 0;
+    s->history_count = 0;
     for (int k = HISTORY_PREFILL; k >= 1; k--) {
-        push_history((v2){head.p.x - k * SEGMENT_DIST, head.p.y});
+        push_history(s, (v2){s->Snake_head_p.x - k * SEGMENT_DIST, s->Snake_head_p.y});
     }
-    update_tail();
+    update_tail(s);
 
-    food.half_size = (v2){food.half_size_range.y, food.half_size_range.y};
-    food.pulse_dir = -1.f;
-    food_spawn();
+    s->food_half_size = (v2){s->food_half_size_range.y, s->food_half_size_range.y};
+    s->food_pulse_dir = -1.f;
+    food_spawn(s);
 }
 
 internal void
-init_game(void) {
+init_game(sim* s) {
     init_seed();
-    memset(&head, 0, sizeof(head));
-    memset(&food, 0, sizeof(food));
-    memset(tail, 0, sizeof(tail));
-    memset(path_history, 0, sizeof(path_history));
+    memset(s, 0, sizeof(sim));
+    s->Snake_head_half_size = (v2){1.5f, 1.5f};
 
-    head.half_size = (v2){1.5f, 1.5f};
+    s->food_half_size_range = (v2){0.75f, 2.5f};
+    s->food_color = colors[0];
 
-    food.half_size_range = (v2){0.75f, 2.5f};
-    food.color = colors[0];
-
-    arena_half_size = (v2){85.f, 40.f};
-    region_w = ((arena_half_size.x - food.half_size_range.y) * 2) / REGION_COLS;
-    region_h = ((arena_half_size.y - food.half_size_range.y) * 2) / REGION_ROWS;
+    s->arena_half_size = (v2){85.f, 40.f};
+    s->region_w = ((s->arena_half_size.x - s->food_half_size_range.y) * 2) / REGION_COLS;
+    s->region_h = ((s->arena_half_size.y - s->food_half_size_range.y) * 2) / REGION_ROWS;
 
     int idx = 0;
     for (int r = 0; r < REGION_ROWS; r++) {
         for (int c = 0; c < REGION_COLS; c++) {
-            regions[idx].min = (v2){-(arena_half_size.x - food.half_size_range.y) + c * region_w,
-                                    -(arena_half_size.y - food.half_size_range.y) + r * region_h};
-            regions[idx].max = (v2){regions[idx].min.x + region_w, regions[idx].min.y + region_h};
-            regions[idx].occupied = false;
+            s->regions[idx].min = (v2){-(s->arena_half_size.x - s->food_half_size_range.y) + c * s->region_w,
+                                       -(s->arena_half_size.y - s->food_half_size_range.y) + r * s->region_h};
+            s->regions[idx].max = (v2){s->regions[idx].min.x + s->region_w, s->regions[idx].min.y + s->region_h};
+            s->regions[idx].occupied = false;
             idx++;
         }
     }
 
     game_initialized = true;
-    reset_round();
+    reset_round(s);
 }
 
 internal void
-begin_game_over(void) {
-    game_over_timer = GAME_OVER_TIME;
+begin_game_over(sim* s) {
+    s->game_over_timer = GAME_OVER_TIME;
 }
 
 
@@ -231,82 +135,61 @@ begin_game_over(void) {
 // turn, or the current heading). Only 90-degree turns are accepted, so the
 // snake can never reverse into itself, no matter how fast keys are mashed.
 internal void
-queue_direction(v2 d) {
-    if (dir_queue_count >= DIR_QUEUE_MAX) return;
-    v2 ref = dir_queue_count ? dir_queue[dir_queue_count - 1] : head.dir;
+queue_direction(sim* s, v2 d) {
+    if (s->dir_queue_count >= DIR_QUEUE_MAX) return;
+    v2 ref = s->dir_queue_count ? s->dir_queue[s->dir_queue_count - 1] : s->Snake_head_dir;
     f32 dot = ref.x * d.x + ref.y * d.y;
-    if (fabsf(dot) < 0.5f) dir_queue[dir_queue_count++] = d;
+    if (fabsf(dot) < 0.5f) s->dir_queue[s->dir_queue_count++] = d;
 }
 
 
 // ------------------------------------------------------------ simulation
-
 internal void
-update_game(Input *input, f32 dt) {
-    if (!game_initialized) init_game();
-
-    if (game_over_timer > 0.f) {
-        game_over_timer -= dt;
-        if (game_over_timer <= 0.f) reset_round();
-        return;
-    }
-
-    // --- turning: one queued turn is applied per tick ---
-    if (pressed(BUTTON_UP))    queue_direction((v2){0.f, 1.f});
-    if (pressed(BUTTON_DOWN))  queue_direction((v2){0.f, -1.f});
-    if (pressed(BUTTON_LEFT))  queue_direction((v2){-1.f, 0.f});
-    if (pressed(BUTTON_RIGHT)) queue_direction((v2){1.f, 0.f});
-    if (dir_queue_count > 0) {
-        head.dir = dir_queue[0];
-        for (int i = 1; i < dir_queue_count; i++) dir_queue[i - 1] = dir_queue[i];
-        dir_queue_count--;
-    }
-
-    // --- move head. Velocity comes from dir*speed every tick, so speed-ups
-    //     from eating take effect immediately (before, dp was a stale copy). ---
-    head.p.x += head.dir.x * head.speed * dt;
-    head.p.y += head.dir.y * head.speed * dt;
+simulate(sim* s,f32 dt) {
+  
+    s->Snake_head_p.x += s->Snake_head_dir.x * s->Snake_head_speed * dt;
+    s->Snake_head_p.y += s->Snake_head_dir.y * s->Snake_head_speed * dt;
 
     // --- arena walls (the head stays fully inside the play area) ---
-    f32 lim_x = arena_half_size.x - head.half_size.x;
-    f32 lim_y = arena_half_size.y - head.half_size.y;
+    f32 lim_x = s->arena_half_size.x - s->Snake_head_half_size.x;
+    f32 lim_y = s->arena_half_size.y - s->Snake_head_half_size.y;
 #if WALLS_KILL
-    if (head.p.x > lim_x || head.p.x < -lim_x || head.p.y > lim_y || head.p.y < -lim_y) {
+    if (s->Snake_head_p.x > lim_x || s->Snake_head_p.x < -lim_x || s->Snake_head_p.y > lim_y || s->Snake_head_p.y < -lim_y) {
         begin_game_over();
         return;
     }
 #else
     b32 wrapped = false;
-    if (head.p.x > lim_x)       { head.p.x -= 2.f * lim_x; wrapped = true; }
-    else if (head.p.x < -lim_x) { head.p.x += 2.f * lim_x; wrapped = true; }
-    if (head.p.y > lim_y)       { head.p.y -= 2.f * lim_y; wrapped = true; }
-    else if (head.p.y < -lim_y) { head.p.y += 2.f * lim_y; wrapped = true; }
-    if (wrapped) head.last_rec = head.p;   // don't interpolate across the arena
+    if (s->Snake_head_p.x > lim_x)       { s->Snake_head_p.x -= 2.f * lim_x; wrapped = true; }
+    else if (s->Snake_head_p.x < -lim_x) { s->Snake_head_p.x += 2.f * lim_x; wrapped = true; }
+    if (s->Snake_head_p.y > lim_y)       { s->Snake_head_p.y -= 2.f * lim_y; wrapped = true; }
+    else if (s->Snake_head_p.y < -lim_y) { s->Snake_head_p.y += 2.f * lim_y; wrapped = true; }
+    if (wrapped) s->Snake_head_last_rec = s->Snake_head_p;   // don't interpolate across the arena
 #endif
 
     // --- record the path at exact SEGMENT_DIST intervals, so the tail spacing
     //     does not depend on frame rate ---
     for (int guard = 0; guard < 16; guard++) {
-        f32 dx = head.p.x - head.last_rec.x;
-        f32 dy = head.p.y - head.last_rec.y;
+        f32 dx = s->Snake_head_p.x - s->Snake_head_last_rec.x;
+        f32 dy = s->Snake_head_p.y - s->Snake_head_last_rec.y;
         f32 d2 = dx * dx + dy * dy;
         if (d2 < SEGMENT_DIST * SEGMENT_DIST) break;
         f32 d = sqrtf(d2);
-        head.last_rec.x += dx / d * SEGMENT_DIST;
-        head.last_rec.y += dy / d * SEGMENT_DIST;
-        push_history(head.last_rec);
+        s->Snake_head_last_rec.x += dx / d * SEGMENT_DIST;
+        s->Snake_head_last_rec.y += dy / d * SEGMENT_DIST;
+        push_history(s,s->Snake_head_last_rec);
     }
-    update_tail();
+    update_tail(s);
 
     // --- self collision: cut the tail at the hit segment, lose a life ---
-    for (int i = SAFE_TAIL_SEGMENTS; i < tail_count; i++) {
-        if (is_colliding(head.p, tail[i].p, head.half_size, head.half_size)) {
-            tail_count = i;
-            head.color = random_color();
-            lives--;
-            if (lives <= 0) {
-                lives = 0;
-                begin_game_over();
+    for (int i = SAFE_TAIL_SEGMENTS; i < s->tail_count; i++) {
+        if (is_colliding(s->Snake_head_p, s->tail[i], s->Snake_head_half_size, s->Snake_head_half_size)) {
+            s->tail_count = i;
+            s->Snake_head_color = random_color();
+            s->lives--;
+            if (s->lives <= 0) {
+                s->lives = 0;
+                begin_game_over(s);
                 return;
             }
             break;
@@ -314,35 +197,55 @@ update_game(Input *input, f32 dt) {
     }
 
     // --- food pulse (time based, flips colour at each extreme) ---
-    f32 size = food.half_size.x + food.pulse_dir * FOOD_PULSE_SPEED * dt;
-    if (size >= food.half_size_range.y) {
-        size = food.half_size_range.y;
-        food.pulse_dir = -1.f;
-        color_idx = (color_idx + 1) % MAX_COLORS;
-        food.color = colors[color_idx];
-    } else if (size <= food.half_size_range.x) {
-        size = food.half_size_range.x;
-        food.pulse_dir = 1.f;
-        color_idx = (color_idx + 1) % MAX_COLORS;
-        food.color = colors[color_idx];
+    f32 size = s->food_half_size.x + s->food_pulse_dir * FOOD_PULSE_SPEED * dt;
+    if (size >= s->food_half_size_range.y) {
+        size = s->food_half_size_range.y;
+        s->food_pulse_dir = -1.f;
+        s->food_color = colors[(s->food_color_idx + 1) % MAX_COLORS];
+        s->food_color_idx = (s->food_color_idx + 1) % MAX_COLORS;
+    } else if (size <= s->food_half_size_range.x) {
+        size = s->food_half_size_range.x;
+        s->food_pulse_dir = 1.f;
+        s->food_color = colors[(s->food_color_idx + 1) % MAX_COLORS];
+        s->food_color_idx = (s->food_color_idx + 1) % MAX_COLORS;
     }
-    food.half_size = (v2){size, size};
+    s->food_half_size = (v2){size, size};
 
     // --- eating ---
-    if (is_colliding(head.p, food.p, head.half_size, food.half_size)) {
-        food_eaten++;
-        score += tail_count;
-        if (score > high_score) high_score = score;
-        head.speed = clamp(BASE_SPEED, head.speed + tail_count / 50.f, MAX_SPEED);
+    if (is_colliding(s->Snake_head_p, s->food_p, s->Snake_head_half_size, s->food_half_size)) {
+        s->food_eaten++;
+        s->score += s->tail_count;
+        if (s->score > s->high_score) s->high_score = s->score;
+        s->Snake_head_speed = clamp(BASE_SPEED, s->Snake_head_speed + s->tail_count / 50.f, MAX_SPEED);
 
-        if (tail_count < MAX_TAIL) {
-            tail[tail_count].p = tail_count > 0 ? tail[tail_count - 1].p : head.p;
-            tail_count++;
+        if (s->tail_count < MAX_TAIL) {
+            s->tail[s->tail_count] = s->tail_count > 0 ? s->tail[s->tail_count - 1]: s->Snake_head_p;
+            s->tail_count++;
         }
-        food_spawn();
+        food_spawn(s);
     }
 }
 
+internal void
+update_game(Input *input, f32 dt){
+    sim* s = &game_state;
+    if (!game_initialized) init_game(s);
+    if (s->game_over_timer > 0.f) {
+        s->game_over_timer -= dt;
+        if (s->game_over_timer <= 0.f) reset_round(s);
+        return;
+    }
+    if (pressed(BUTTON_UP))    queue_direction(s, (v2){0.f, 1.f});
+    if (pressed(BUTTON_DOWN))  queue_direction(s, (v2){0.f, -1.f});
+    if (pressed(BUTTON_LEFT))  queue_direction(s, (v2){-1.f, 0.f});
+    if (pressed(BUTTON_RIGHT)) queue_direction(s, (v2){1.f, 0.f});
+    if (s->dir_queue_count > 0) {
+        s->Snake_head_dir = s->dir_queue[0];
+        for (int i = 1; i < s->dir_queue_count; i++) s->dir_queue[i - 1] = s->dir_queue[i];
+        s->dir_queue_count--;
+    }
+    simulate(s,dt);
+}
 
 // ------------------------------------------------------------ rendering
 
@@ -374,59 +277,38 @@ draw_heart(v2 p, u32 color) {
 }
 
 internal void
-render_game(void) {
+render_game() {
+    sim * s = &game_state;
     clear_screen(0xE69F50);
-    draw((v2){0.f, 0.f}, arena_half_size, 0x262D27, SHAPE_RECT);
+    draw((v2){0.f, 0.f}, s->arena_half_size, 0x262D27, SHAPE_RECT);
 
     // lives
-    v2 heart_p = (v2){-arena_half_size.x + 3.f, arena_half_size.y + 3.f};
-    for (int i = 0; i < lives; i++) {
+    v2 heart_p = (v2){-s->arena_half_size.x + 3.f, s->arena_half_size.y + 3.f};
+    for (int i = 0; i < s->lives; i++) {
         draw_heart(heart_p, 0xEA2323);
         heart_p.x += 5.f;
     }
 
     // tail (oldest first so newer segments overlap older ones), then head
-    for (int i = tail_count - 1; i >= 0; i--) {
-        draw(tail[i].p, head.half_size, head.color, SHAPE_CIRCLE);
+    for (int i = s->tail_count - 1; i >= 0; i--) {
+        draw(s->tail[i], s->Snake_head_half_size, s->Snake_head_color, SHAPE_CIRCLE);
     }
-    draw(head.p, head.half_size, head.color, SHAPE_CIRCLE);
+    draw(s->Snake_head_p, s->Snake_head_half_size, s->Snake_head_color, SHAPE_CIRCLE);
 
-    draw(food.p, food.half_size, food.color, SHAPE_CIRCLE);
+    draw(s->food_p, s->food_half_size, s->food_color, SHAPE_CIRCLE);
 
     // HUD
     u32 text_color = 0x4A1D54;
     u32 num_color = 0xFEF6EB;
-    draw_words((v2){-arena_half_size.x + 4.f, arena_half_size.y + 6.f}, text_color, "LIVES");
-    draw_words((v2){-8.f, arena_half_size.y + 6.f}, text_color, "HIGH SCORE");
-    draw_score((v2){0.f, arena_half_size.y + 3.f}, num_color, (u32)high_score);
-    draw_words((v2){26.f, arena_half_size.y + 6.f}, text_color, "SCORE");
-    draw_score((v2){30.f, arena_half_size.y + 3.f}, num_color, (u32)score);
+    draw_words((v2){-s->arena_half_size.x + 4.f, s->arena_half_size.y + 6.f}, text_color, "LIVES");
+    draw_words((v2){-8.f, s->arena_half_size.y + 6.f}, text_color, "HIGH SCORE");
+    draw_score((v2){0.f, s->arena_half_size.y + 3.f}, num_color, (u32)s->high_score);
+    draw_words((v2){26.f, s->arena_half_size.y + 6.f}, text_color, "SCORE");
+    draw_score((v2){30.f, s->arena_half_size.y + 3.f}, num_color, (u32)s->score);
 
-    if (game_over_timer > 0.f) {
+    if (s->game_over_timer > 0.f) {
         draw_words((v2){-8.f, 0.f}, 0xFEF6EB, "GAME OVER");
     }
 }
 
 
-// ------------------------------------------------------------ agent hook (later)
-
-GameState
-get_gamestate_snapshot(void) {
-    GameState state = {0};
-    state.head_x = head.p.x;
-    state.head_y = head.p.y;
-    state.dir_x = head.dir.x * head.speed;
-    state.dir_y = head.dir.y * head.speed;
-    state.food_x = food.p.x;
-    state.food_y = food.p.y;
-    state.tail_count = tail_count;
-    for (int k = 0; k < tail_count; k++) {
-        state.tail_positions[2 * k]     = tail[k].p.x;
-        state.tail_positions[2 * k + 1] = tail[k].p.y;
-    }
-    state.lives = lives;
-    state.speed = head.speed;
-    state.food_eaten = food_eaten;
-    state.score = score;
-    return state;
-}

@@ -19,6 +19,7 @@ static Render_Buffer render_buffer;
 #include "collision.c"
 #include "software_rendering.c"
 #include "console.c"
+#include "sim.h"
 #include "game.c"
 
 #define SIM_DT (1.0f / 60.0f)     // fixed simulation step
